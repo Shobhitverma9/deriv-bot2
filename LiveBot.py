@@ -16,7 +16,8 @@ BOT_STATE = {
     "start_time": datetime.utcnow(),
     "status": "Initializing...",
     "disconnects": 0,
-    "trades_placed": 0
+    "trades_placed": 0,
+    "last_trade_epoch": 0
 }
 
 def get_uptime():
@@ -39,7 +40,7 @@ def custom_print(*args, **kwargs):
 print = custom_print
 
 # --- STRATEGY CONFIG ---
-SYMBOL = "cryBTCUSD"
+SYMBOL = "R_100"        # Changed to Volatility 100 Index to fix the Crypto duration limit
 GRANULARITY = 300       # 5 minutes
 ROLLING_WINDOW = 20
 BREAKOUT_MULTIPLIER = 2.5
@@ -150,10 +151,15 @@ async def process_strategy(env, candles):
             print("⚠️ RSI not at extremes. Ignoring breakout to avoid trend-continuation trap.")
             
         if contract_type:
-            api_token = env.get('DERIV_API_TOKEN')
-            app_id = env.get('DERIV_APP_ID')
-            account_id = env.get('DERIV_ACCOUNT_ID')
-            await asyncio.to_thread(execute_trade, api_token, app_id, account_id, contract_type)
+            current_epoch = last_row['epoch'] if 'epoch' in last_row else int(datetime.utcnow().timestamp())
+            if current_epoch <= BOT_STATE['last_trade_epoch']:
+                print(f"⚠️ Ignored duplicate signal for candle {current_epoch} (Already fired).")
+            else:
+                BOT_STATE['last_trade_epoch'] = current_epoch
+                api_token = env.get('DERIV_API_TOKEN')
+                app_id = env.get('DERIV_APP_ID')
+                account_id = env.get('DERIV_ACCOUNT_ID')
+                await asyncio.to_thread(execute_trade, api_token, app_id, account_id, contract_type)
 
 async def live_trading_bot():
     env = load_env()
