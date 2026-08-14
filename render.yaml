@@ -3,7 +3,7 @@ services:
     name: deriv-algo-bot
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python LiveBot.py
+    startCommand: python -u live_forex_bot.py
     envVars:
       - key: DERIV_API_TOKEN
         sync: false
