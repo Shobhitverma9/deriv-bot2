@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: deriv-algo-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python LiveBot.py
+    envVars:
+      - key: DERIV_API_TOKEN
+        sync: false
+      - key: DERIV_APP_ID
+        sync: false
+      - key: DERIV_ACCOUNT_ID
+        sync: false
