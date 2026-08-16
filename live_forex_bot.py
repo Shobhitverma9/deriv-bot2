@@ -26,6 +26,11 @@ DURATION_UNIT = "m"
 # --- GLOBAL STATE FOR DASHBOARD ---
 bot_state = {
     "total_trades": 0,
+    "trades_won": 0,
+    "trades_lost": 0,
+    "starting_balance": 0.0,
+    "current_balance": 0.0,
+    "total_profit": 0.0,
     "last_signal": "None",
     "last_signal_time": "Never",
     "last_candle_rsi": 0.0,
@@ -81,6 +86,53 @@ async def get_otp_ws_url():
         log(f"Failed to get OTP WS URL. Status: {res.status_code}. Response: {res.text}")
         return None
 
+async def fetch_balance():
+    ws_url = await get_otp_ws_url()
+    if not ws_url:
+        return None
+    try:
+        async with websockets.connect(ws_url) as ws:
+            await ws.send(json.dumps({"balance": 1}))
+            res = json.loads(await ws.recv())
+            if "balance" in res:
+                return float(res["balance"]["balance"])
+    except Exception as e:
+        log(f"Error fetching balance: {e}")
+    return None
+
+async def monitor_contract(contract_id):
+    ws_url = await get_otp_ws_url()
+    if not ws_url:
+        return
+    log(f"Monitoring contract {contract_id} for profit/loss...")
+    try:
+        async with websockets.connect(ws_url) as ws:
+            req = {"proposal_open_contract": 1, "contract_id": contract_id, "subscribe": 1}
+            await ws.send(json.dumps(req))
+            while True:
+                res = json.loads(await ws.recv())
+                if "error" in res:
+                    log(f"Contract Monitor Error: {res['error']['message']}")
+                    break
+                contract = res.get("proposal_open_contract", {})
+                if contract.get("is_sold"):
+                    profit = float(contract.get("profit", 0.0))
+                    status = contract.get("status")
+                    log(f"Contract {contract_id} closed! Status: {status}, Profit: ${profit:.2f}")
+                    
+                    bot_state["total_profit"] += profit
+                    if profit > 0:
+                        bot_state["trades_won"] += 1
+                    else:
+                        bot_state["trades_lost"] += 1
+                        
+                    bal = await fetch_balance()
+                    if bal is not None:
+                        bot_state["current_balance"] = bal
+                    break
+    except Exception as e:
+        log(f"Error monitoring contract {contract_id}: {e}")
+
 async def execute_trade(contract_type):
     ws_url = await get_otp_ws_url()
     if not ws_url:
@@ -123,8 +175,10 @@ async def execute_trade(contract_type):
         if "error" in buy_res:
             log(f"Trade Execution Failed: {buy_res['error']['message']}")
         else:
-            log(f"Trade Executed Successfully! Contract ID: {buy_res['buy']['contract_id']}")
+            contract_id = buy_res['buy']['contract_id']
+            log(f"Trade Executed Successfully! Contract ID: {contract_id}")
             bot_state["total_trades"] += 1
+            asyncio.create_task(monitor_contract(contract_id))
 
 async def fetch_recent_candles():
     uri = "wss://api.derivws.com/trading/v1/options/ws/public"
@@ -371,11 +425,38 @@ async def handle(request):
                 </div>
 
                 <div class="card">
+                    <h2>Account Overview</h2>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+                        <div>
+                            <div class="sub-stat">Current Balance</div>
+                            <div style="font-size: 1.5rem; font-weight: bold;">${bot_state['current_balance']:.2f}</div>
+                            <div class="sub-stat" style="font-size: 0.75rem;">Start: ${bot_state['starting_balance']:.2f}</div>
+                        </div>
+                        <div>
+                            <div class="sub-stat">Total P/L</div>
+                            <div style="font-size: 1.5rem; font-weight: bold;" class="{ 'val-up' if bot_state['total_profit'] >= 0 else 'val-down'}">${bot_state['total_profit']:.2f}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
                     <h2>Bot Performance</h2>
-                    <div class="stat">{bot_state['total_trades']}</div>
-                    <div class="sub-stat">Trades Executed</div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+                        <div>
+                            <div class="stat">{bot_state['total_trades']}</div>
+                            <div class="sub-stat">Trades Executed</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 1.8rem; font-weight: 700; margin: 0.5rem 0;">
+                                <span style="color: var(--success);">{bot_state['trades_won']}</span>
+                                <span style="color: var(--text-muted); font-size: 1.2rem;">/</span>
+                                <span style="color: var(--danger);">{bot_state['trades_lost']}</span>
+                            </div>
+                            <div class="sub-stat">Win / Loss</div>
+                        </div>
+                    </div>
                     
-                    <div style="margin-top: 1.5rem;">
+                    <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.05);">
                         <div class="sub-stat">Last Signal</div>
                         <div style="margin-top: 0.5rem;">
                             <span class="status-tag">{bot_state['last_signal']}</span>
@@ -435,6 +516,14 @@ async def main():
         log("ERROR: Missing API credentials in .env file.")
         return
         
+    bal = await fetch_balance()
+    if bal is not None:
+        bot_state["starting_balance"] = bal
+        bot_state["current_balance"] = bal
+        log(f"Fetched starting balance: ${bal:.2f}")
+    else:
+        log("Warning: Could not fetch initial balance.")
+
     await start_web_server()
     log("Live Forex Bot Started! Waiting for the next 15-minute boundary...")
     
