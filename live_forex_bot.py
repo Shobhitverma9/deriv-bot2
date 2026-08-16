@@ -31,7 +31,8 @@ bot_state = {
     "last_candle_rsi": 0.0,
     "last_candle_body": 0.0,
     "last_candle_avg_body": 0.0,
-    "last_update": "Never"
+    "last_update": "Never",
+    "last_trade_epoch": 0
 }
 app_logs = deque(maxlen=100)
 
@@ -178,14 +179,22 @@ def check_for_signal(candles):
 
     if is_breakout:
         if direction == 1 and rsi > RSI_OB:
+            if last_closed['epoch'] <= bot_state["last_trade_epoch"]:
+                log(f"⚠️ Ignored duplicate PUT signal for candle {candle_time} (Already fired).")
+                return None
             log(f"🔥 PUT SIGNAL GENERATED! Breakout UP with RSI {rsi:.2f}")
             bot_state["last_signal"] = "PUT"
             bot_state["last_signal_time"] = bot_state["last_update"]
+            bot_state["last_trade_epoch"] = last_closed['epoch']
             return "PUT"
         elif direction == -1 and rsi < RSI_OS:
+            if last_closed['epoch'] <= bot_state["last_trade_epoch"]:
+                log(f"⚠️ Ignored duplicate CALL signal for candle {candle_time} (Already fired).")
+                return None
             log(f"🔥 CALL SIGNAL GENERATED! Breakout DOWN with RSI {rsi:.2f}")
             bot_state["last_signal"] = "CALL"
             bot_state["last_signal_time"] = bot_state["last_update"]
+            bot_state["last_trade_epoch"] = last_closed['epoch']
             return "CALL"
             
     return None
