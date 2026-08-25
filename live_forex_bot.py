@@ -16,7 +16,7 @@ from aiohttp import web
 SYMBOL = "frxAUDCAD"
 STAKE = 10.0
 ROLLING_WINDOW = 20
-MULTIPLIER = 2.5
+MULTIPLIER = 3.0
 RSI_PERIOD = 7
 RSI_OB = 80
 RSI_OS = 20
@@ -42,10 +42,17 @@ bot_state = {
 app_logs = deque(maxlen=100)
 
 def log(msg):
-    time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now = datetime.now()
+    time_str = now.strftime('%Y-%m-%d %H:%M:%S')
+    date_str = now.strftime('%Y-%m-%d')
     formatted = f"[{time_str}] {msg}"
     print(formatted)
     app_logs.appendleft(formatted)
+    
+    # Save to daily log file
+    os.makedirs("logs", exist_ok=True)
+    with open(f"logs/bot_log_{date_str}.txt", "a", encoding="utf-8") as f:
+        f.write(formatted + "\n")
 
 def calculate_rsi(prices, periods=14):
     if len(prices) < periods + 1:
@@ -144,7 +151,7 @@ async def execute_trade(contract_type):
         proposal_req = {
             "proposal": 1,
             "amount": STAKE,
-            "basis": "payout",
+            "basis": "stake",
             "contract_type": contract_type,
             "currency": "USD",
             "underlying_symbol": SYMBOL,
