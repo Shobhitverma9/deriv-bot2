@@ -15,8 +15,8 @@ from aiohttp import web
 # --- STRATEGY PARAMETERS ---
 SYMBOL = "frxAUDCAD"
 STAKE = 10.0
-ROLLING_WINDOW = 20
-MULTIPLIER = 3.0
+ROLLING_WINDOW = 10
+MULTIPLIER = 3.5
 RSI_PERIOD = 7
 RSI_OB = 80
 RSI_OS = 20
@@ -208,7 +208,14 @@ def check_for_signal(candles):
         return None
         
     df = pd.DataFrame(candles)
-    df = df.iloc[:-1].copy()
+    
+    current_epoch = int(time.time())
+    current_boundary_epoch = current_epoch - (current_epoch % 900)
+    
+    if df.iloc[-1]['epoch'] >= current_boundary_epoch:
+        df = df.iloc[:-1].copy()
+    else:
+        df = df.copy()
     
     df['open'] = df['open'].astype(float)
     df['close'] = df['close'].astype(float)
@@ -507,12 +514,12 @@ async def bot_loop():
         elif minutes < 45: next_min = 45
         else: next_min = 60
         
-        seconds_to_sleep = ((next_min * 60) - (minutes * 60 + now.second)) + 1
+        seconds_to_sleep = ((next_min * 60) - (minutes * 60 + now.second)) + 4
         
         if next_min == 60:
             log(f"Sleeping for {seconds_to_sleep} seconds until next hour...")
         else:
-            log(f"Sleeping for {seconds_to_sleep} seconds until XX:{next_min}:01...")
+            log(f"Sleeping for {seconds_to_sleep} seconds until XX:{next_min}:04...")
             
         await asyncio.sleep(seconds_to_sleep)
         await run_bot_cycle()
