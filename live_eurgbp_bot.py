@@ -13,12 +13,12 @@ from dotenv import load_dotenv
 from aiohttp import web
 
 # --- STRATEGY PARAMETERS ---
-SYMBOL = "frxEURUSD"
+SYMBOL = "frxEURGBP"
 # --- STAKING CONFIGURATION ---
 MIN_STAKE = 5.0
-BASE_RISK_PCT = 0.01
-ROLLING_WINDOW = 20
-MULTIPLIER = 3.0
+BASE_RISK_PCT = 0.05
+ROLLING_WINDOW = 10
+MULTIPLIER = 2.5
 MAX_MULTIPLIER = 99.0
 RSI_PERIOD = 7
 RSI_OB = 75
@@ -27,11 +27,11 @@ DURATION = 15
 DURATION_UNIT = "m"
 
 # --- RISK & FILTER SETTINGS ---
-MIN_PAYOUT_PCT = 70.0
+MIN_PAYOUT_PCT = 65.0
 USE_TIME_FILTER = True
-BLACKOUT_START_HOUR = 6  # 06:00 GMT
-BLACKOUT_END_HOUR = 8    # 08:00 GMT
-BLOCK_THURSDAYS = True   # Disable trading on Thursdays
+BLOCK_MONDAYS = True
+BLOCK_TUESDAYS = True
+USE_TREND_FILTER = True  # Avoid fighting 50-SMA slope
 
 # --- GLOBAL STATE FOR DASHBOARD ---
 bot_state = {
@@ -283,20 +283,28 @@ def check_for_signal(candles):
     df['avg_body_size'] = df['body_size'].rolling(window=ROLLING_WINDOW).mean().shift(1)
     df['rsi'] = calculate_rsi(df['close'].values, RSI_PERIOD)
     
+    df['sma_50'] = df['close'].rolling(window=50).mean()
+    df['sma_slope'] = df['sma_50'].diff(5)
+    
     last_closed = df.iloc[-1]
     
     # Time Filter Check
     candle_time = pd.to_datetime(last_closed['epoch'], unit='s')
     current_hour = candle_time.hour
     
-    if USE_TIME_FILTER and (BLACKOUT_START_HOUR <= current_hour < BLACKOUT_END_HOUR):
+    if USE_TIME_FILTER and current_hour in [5, 7, 13]:
         bot_state["last_update"] = f"{candle_time} (Blackout Period)"
-        log(f"⏸️ Signal ignored. {current_hour}:00 GMT is within the {BLACKOUT_START_HOUR}:00 - {BLACKOUT_END_HOUR}:00 blackout window.")
+        log(f"⏸️ Signal ignored. {current_hour}:00 GMT is a known trap for EUR/GBP.")
         return None
         
-    if BLOCK_THURSDAYS and candle_time.dayofweek == 3:
-        bot_state["last_update"] = f"{candle_time} (Thursday Block)"
-        log("⏸️ Signal ignored. Trading is disabled on Thursdays to avoid macro volatility traps.")
+    if BLOCK_MONDAYS and candle_time.dayofweek == 0:
+        bot_state["last_update"] = f"{candle_time} (Monday Block)"
+        log("⏸️ Signal ignored. Trading is disabled on Mondays for EUR/GBP.")
+        return None
+        
+    if BLOCK_TUESDAYS and candle_time.dayofweek == 1:
+        bot_state["last_update"] = f"{candle_time} (Tuesday Block)"
+        log("⏸️ Signal ignored. Trading is disabled on Tuesdays for EUR/GBP.")
         return None
     
     if pd.isna(last_closed['avg_body_size']) or pd.isna(last_closed['rsi']):
@@ -317,6 +325,17 @@ def check_for_signal(candles):
     log(f"Analyzed 15m candle (Epoch: {candle_time}) -> Body: {last_closed['body_size']:.5f}, Avg: {last_closed['avg_body_size']:.5f}, Mult: {multiplier_val:.2f}x, RSI: {rsi:.2f}")
 
     if is_breakout:
+        if USE_TREND_FILTER:
+            sma_slope = last_closed['sma_slope']
+            if direction == 1 and sma_slope > 0:
+                bot_state["last_update"] = f"{candle_time} (Trend Trap)"
+                log("⏸️ Signal ignored. Fighting the 50-SMA macro uptrend.")
+                return None
+            if direction == -1 and sma_slope < 0:
+                bot_state["last_update"] = f"{candle_time} (Trend Trap)"
+                log("⏸️ Signal ignored. Fighting the 50-SMA macro downtrend.")
+                return None
+
         if direction == 1 and rsi > RSI_OB:
             if last_closed['epoch'] <= bot_state["last_trade_epoch"]:
                 log(f"⚠️ Ignored duplicate PUT signal for candle {candle_time} (Already fired).")

@@ -1,0 +1,29 @@
+{
+    "symbol": "frxAUDCAD",
+    "bot_state": {
+        "total_trades": 0,
+        "trades_won": 0,
+        "trades_lost": 0,
+        "starting_balance": 9966.31,
+        "current_balance": 9966.31,
+        "total_profit": 0.0,
+        "last_signal": "None",
+        "last_signal_time": "Never",
+        "last_candle_rsi": 11.083743842363432,
+        "last_candle_body": 0.00036999999999998145,
+        "last_candle_avg_body": 0.0005470000000000197,
+        "last_update": "2026-09-02 20:54:17",
+        "last_trade_epoch": 0,
+        "pending_trade_details": {}
+    },
+    "app_logs": [
+        "[2026-09-02 20:54:17] Sleeping for 347 seconds until next hour...",
+        "[2026-09-02 20:54:17] No signal detected for this cycle.",
+        "[2026-09-02 20:54:17] Analyzed 15m candle (Epoch: 2026-09-02 15:00:00) -> Body: 0.00037, Avg: 0.00055, Mult: 0.68x, RSI: 11.08",
+        "[2026-09-02 20:54:15] Running 15-minute strategy cycle...",
+        "[2026-09-02 20:54:15] Running initial test cycle immediately...",
+        "[2026-09-02 20:54:15] Live Forex Bot Started! Waiting for the next 15-minute boundary...",
+        "[2026-09-02 20:54:15] Fetched starting balance: $9966.31"
+    ],
+    "trade_history": []
+}

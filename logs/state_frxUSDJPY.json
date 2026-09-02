@@ -1,0 +1,29 @@
+{
+    "symbol": "frxUSDJPY",
+    "bot_state": {
+        "total_trades": 0,
+        "trades_won": 0,
+        "trades_lost": 0,
+        "starting_balance": 9966.31,
+        "current_balance": 9966.31,
+        "total_profit": 0.0,
+        "last_signal": "None",
+        "last_signal_time": "Never",
+        "last_candle_rsi": 16.390179163901095,
+        "last_candle_body": 0.046999999999997044,
+        "last_candle_avg_body": 0.13949999999999818,
+        "last_update": "2026-09-02 20:54:07",
+        "last_trade_epoch": 0,
+        "pending_trade_details": {}
+    },
+    "app_logs": [
+        "[2026-09-02 20:54:07] Sleeping for 357 seconds until next hour...",
+        "[2026-09-02 20:54:07] No signal detected for this cycle.",
+        "[2026-09-02 20:54:07] Analyzed 15m candle (Epoch: 2026-09-02 15:00:00) -> Body: 0.04700, Avg: 0.13950, Mult: 0.34x, RSI: 16.39",
+        "[2026-09-02 20:54:05] Running 15-minute strategy cycle...",
+        "[2026-09-02 20:54:05] Running initial test cycle immediately...",
+        "[2026-09-02 20:54:05] Live Forex Bot Started! Waiting for the next 15-minute boundary...",
+        "[2026-09-02 20:54:05] Fetched starting balance: $9966.31"
+    ],
+    "trade_history": []
+}

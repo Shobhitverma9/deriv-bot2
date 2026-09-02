@@ -13,25 +13,28 @@ from dotenv import load_dotenv
 from aiohttp import web
 
 # --- STRATEGY PARAMETERS ---
-SYMBOL = "frxEURUSD"
+SYMBOL = "frxGBPUSD"
 # --- STAKING CONFIGURATION ---
 MIN_STAKE = 5.0
-BASE_RISK_PCT = 0.01
-ROLLING_WINDOW = 20
-MULTIPLIER = 3.0
+BASE_RISK_PCT = 0.03
+ROLLING_WINDOW = 15
+MULTIPLIER = 3.5
 MAX_MULTIPLIER = 99.0
 RSI_PERIOD = 7
-RSI_OB = 75
-RSI_OS = 25
+RSI_OB = 80
+RSI_OS = 20
 DURATION = 15
 DURATION_UNIT = "m"
 
 # --- RISK & FILTER SETTINGS ---
 MIN_PAYOUT_PCT = 70.0
 USE_TIME_FILTER = True
-BLACKOUT_START_HOUR = 6  # 06:00 GMT
+BLACKOUT_START_HOUR = 6  # 06:00 GMT (London)
 BLACKOUT_END_HOUR = 8    # 08:00 GMT
+NY_BLACKOUT_START_HOUR = 12 # 12:00 GMT (New York)
+NY_BLACKOUT_END_HOUR = 15   # 15:00 GMT (Covers 12, 13, 14)
 BLOCK_THURSDAYS = True   # Disable trading on Thursdays
+MIN_SMA_DISTANCE = 0.015 # Don't trade if too close to SMA
 
 # --- GLOBAL STATE FOR DASHBOARD ---
 bot_state = {
@@ -249,7 +252,7 @@ async def fetch_recent_candles():
         req = {
             "ticks_history": SYMBOL,
             "adjust_start_time": 1,
-            "count": ROLLING_WINDOW + RSI_PERIOD + 2, 
+            "count": 100, 
             "end": "latest",
             "style": "candles",
             "granularity": 900 
@@ -283,23 +286,32 @@ def check_for_signal(candles):
     df['avg_body_size'] = df['body_size'].rolling(window=ROLLING_WINDOW).mean().shift(1)
     df['rsi'] = calculate_rsi(df['close'].values, RSI_PERIOD)
     
+    df['sma_50'] = df['close'].rolling(window=50).mean()
+    df['dist_to_sma'] = abs((df['close'] - df['sma_50']) / df['close']) * 100
+    
     last_closed = df.iloc[-1]
     
     # Time Filter Check
     candle_time = pd.to_datetime(last_closed['epoch'], unit='s')
     current_hour = candle_time.hour
     
-    if USE_TIME_FILTER and (BLACKOUT_START_HOUR <= current_hour < BLACKOUT_END_HOUR):
-        bot_state["last_update"] = f"{candle_time} (Blackout Period)"
-        log(f"⏸️ Signal ignored. {current_hour}:00 GMT is within the {BLACKOUT_START_HOUR}:00 - {BLACKOUT_END_HOUR}:00 blackout window.")
-        return None
+    if USE_TIME_FILTER:
+        if (BLACKOUT_START_HOUR <= current_hour < BLACKOUT_END_HOUR) or (NY_BLACKOUT_START_HOUR <= current_hour < NY_BLACKOUT_END_HOUR):
+            bot_state["last_update"] = f"{candle_time} (Blackout Period)"
+            log(f"⏸️ Signal ignored. {current_hour}:00 GMT is within a blackout window.")
+            return None
         
     if BLOCK_THURSDAYS and candle_time.dayofweek == 3:
         bot_state["last_update"] = f"{candle_time} (Thursday Block)"
         log("⏸️ Signal ignored. Trading is disabled on Thursdays to avoid macro volatility traps.")
         return None
-    
-    if pd.isna(last_closed['avg_body_size']) or pd.isna(last_closed['rsi']):
+        
+    if pd.isna(last_closed['avg_body_size']) or pd.isna(last_closed['rsi']) or pd.isna(last_closed['sma_50']):
+        return None
+        
+    if last_closed['dist_to_sma'] < MIN_SMA_DISTANCE:
+        bot_state["last_update"] = f"{candle_time} (SMA Reject)"
+        log(f"⏸️ Signal ignored. Breakout too close to moving average ({last_closed['dist_to_sma']:.3f}% < {MIN_SMA_DISTANCE}%). No rubber-band effect.")
         return None
         
     multiplier_val = last_closed['body_size'] / last_closed['avg_body_size'] if last_closed['avg_body_size'] > 0 else 0

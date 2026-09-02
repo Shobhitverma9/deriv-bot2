@@ -13,17 +13,24 @@ from dotenv import load_dotenv
 from aiohttp import web
 
 # --- STRATEGY PARAMETERS ---
-SYMBOL = "frxAUDCAD"
-STAKE = 10.0
-ROLLING_WINDOW = 10
-MULTIPLIER = 3.5
-MAX_MULTIPLIER = 5.0
-MIN_PAYOUT_PCT = 70.0
+SYMBOL = "frxUSDCHF"
+# --- STAKING CONFIGURATION ---
+MIN_STAKE = 5.0
+BASE_RISK_PCT = 0.03
+ROLLING_WINDOW = 15
+MULTIPLIER = 3.0
+MAX_MULTIPLIER = 99.0
 RSI_PERIOD = 7
 RSI_OB = 80
 RSI_OS = 20
 DURATION = 15
 DURATION_UNIT = "m"
+
+# --- RISK & FILTER SETTINGS ---
+MIN_PAYOUT_PCT = 70.0
+USE_TIME_FILTER = True
+BLOCK_WEDNESDAYS = True  # Disable trading on Wednesdays
+BLOCK_THURSDAYS = True   # Disable trading on Thursdays
 
 # --- GLOBAL STATE FOR DASHBOARD ---
 bot_state = {
@@ -57,6 +64,10 @@ def log(msg):
     os.makedirs("logs", exist_ok=True)
     with open(f"logs/bot_log_{date_str}.txt", "a", encoding="utf-8") as f:
         f.write(formatted + "\n")
+    try:
+        save_state()
+    except Exception as e:
+        print(f"Error saving state: {e}")
 
 def calculate_rsi(prices, periods=14):
     if len(prices) < periods + 1:
@@ -157,9 +168,24 @@ async def execute_trade(contract_type):
     log(f"Connecting to authenticated WebSocket for trade execution...")
     async with websockets.connect(ws_url) as ws:
         # Step 1: Request Proposal
+        bal = await fetch_balance()
+        if bal is not None:
+            bot_state["current_balance"] = bal
+        else:
+            bal = bot_state["current_balance"]
+            
+        if bal < MIN_STAKE:
+            log(f"⚠️ Insufficient balance to meet minimum stake of ${MIN_STAKE}.")
+            return
+            
+        raw_stake = bal * BASE_RISK_PCT
+        dynamic_stake = max(MIN_STAKE, min(raw_stake, bal * 0.25))
+        dynamic_stake = round(dynamic_stake, 2)
+        log(f"Dynamic Stake Calculated: {BASE_RISK_PCT*100}% of ${bal:.2f} = ${dynamic_stake}")
+
         proposal_req = {
             "proposal": 1,
-            "amount": STAKE,
+            "amount": dynamic_stake,
             "basis": "stake",
             "contract_type": contract_type,
             "currency": "USD",
@@ -258,6 +284,25 @@ def check_for_signal(candles):
     
     last_closed = df.iloc[-1]
     
+    # Time Filter Check
+    candle_time = pd.to_datetime(last_closed['epoch'], unit='s')
+    current_hour = candle_time.hour
+    
+    if USE_TIME_FILTER and current_hour in [0, 7, 13]:
+        bot_state["last_update"] = f"{candle_time} (Blackout Period)"
+        log(f"⏸️ Signal ignored. {current_hour}:00 GMT is a known trap for USD/CHF.")
+        return None
+        
+    if BLOCK_WEDNESDAYS and candle_time.dayofweek == 2:
+        bot_state["last_update"] = f"{candle_time} (Wednesday Block)"
+        log("⏸️ Signal ignored. Trading is disabled on Wednesdays for USD/CHF.")
+        return None
+        
+    if BLOCK_THURSDAYS and candle_time.dayofweek == 3:
+        bot_state["last_update"] = f"{candle_time} (Thursday Block)"
+        log("⏸️ Signal ignored. Trading is disabled on Thursdays for USD/CHF.")
+        return None
+    
     if pd.isna(last_closed['avg_body_size']) or pd.isna(last_closed['rsi']):
         return None
         
@@ -326,264 +371,22 @@ async def run_bot_cycle():
     except Exception as e:
         log(f"⚠️ Network Error during cycle: {e}. Bot will retry on the next cycle.")
 
-async def handle(request):
-    logs_html = "".join([f"<div class='log-entry'>{html.escape(l)}</div>" for l in app_logs])
+
+def save_state():
+    os.makedirs("logs", exist_ok=True)
+    state_file = f"logs/state_{SYMBOL}.json"
     
-    trades_html = ""
-    for t in trade_history:
-        profit = t.get("profit", 0)
-        color = "var(--success)" if profit > 0 else ("var(--danger)" if profit < 0 else "var(--text-muted)")
-        status = t.get("status", "OPEN")
-        trades_html += f"""
-        <div style="background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem; border-left: 4px solid {color};">
-            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
-                <strong>{t.get('type')} - {t.get('time')}</strong>
-                <span style="color: {color}; font-weight: bold;">{status} (P/L: ${profit:.2f})</span>
-            </div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; font-size: 0.85rem; color: var(--text-muted);">
-                <div>
-                    <div>RSI: {t.get('details', {}).get('rsi', 0):.2f}</div>
-                    <div>Multiplier: {t.get('details', {}).get('multiplier', 0):.2f}x</div>
-                </div>
-                <div>
-                    <div>Bal Before: ${t.get('balance_before', 0):.2f}</div>
-                    <div>Bal After: ${t.get('balance_after', 0):.2f}</div>
-                </div>
-            </div>
-        </div>
-        """
+    # Merge all useful state into one object
+    full_state = {
+        "symbol": SYMBOL,
+        "bot_state": bot_state,
+        "app_logs": list(app_logs),
+        "trade_history": list(trade_history)
+    }
     
-    html_content = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Deriv Algo Bot Dashboard</title>
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Fira+Code&display=swap" rel="stylesheet">
-        <style>
-            :root {{
-                --bg: #0f172a;
-                --surface: #1e293b;
-                --primary: #3b82f6;
-                --text: #f8fafc;
-                --text-muted: #94a3b8;
-                --success: #10b981;
-                --danger: #ef4444;
-            }}
-            body {{
-                margin: 0;
-                font-family: 'Inter', system-ui, sans-serif;
-                background-color: var(--bg);
-                color: var(--text);
-                padding: 2rem;
-            }}
-            .container {{
-                max-width: 1200px;
-                margin: 0 auto;
-            }}
-            .header {{
-                display: flex;
-                align-items: center;
-                margin-bottom: 2rem;
-            }}
-            .header h1 {{
-                margin: 0;
-                font-size: 2rem;
-                background: linear-gradient(to right, #60a5fa, #a78bfa);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-            }}
-            .pulse {{
-                width: 12px;
-                height: 12px;
-                background-color: var(--success);
-                border-radius: 50%;
-                margin-right: 1rem;
-                box-shadow: 0 0 10px var(--success);
-                animation: pulse 2s infinite;
-            }}
-            @keyframes pulse {{
-                0% {{ transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }}
-                70% {{ transform: scale(1); box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }}
-                100% {{ transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }}
-            }}
-            .grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-                gap: 1.5rem;
-                margin-bottom: 2rem;
-            }}
-            .card {{
-                background: var(--surface);
-                border-radius: 1rem;
-                padding: 1.5rem;
-                box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-                border: 1px solid rgba(255,255,255,0.05);
-            }}
-            .card h2 {{
-                margin-top: 0;
-                font-size: 1.1rem;
-                color: var(--text-muted);
-                text-transform: uppercase;
-                letter-spacing: 0.05em;
-            }}
-            .stat {{
-                font-size: 2.5rem;
-                font-weight: 700;
-                margin: 0.5rem 0;
-            }}
-            .sub-stat {{
-                color: var(--text-muted);
-                font-size: 0.9rem;
-            }}
-            .logs-container {{
-                background: #000;
-                border-radius: 0.5rem;
-                padding: 1rem;
-                height: 400px;
-                overflow-y: auto;
-                font-family: 'Fira Code', monospace;
-                font-size: 0.85rem;
-                border: 1px solid rgba(255,255,255,0.1);
-            }}
-            .log-entry {{
-                margin-bottom: 0.35rem;
-                color: #a3e635;
-                padding-bottom: 0.35rem;
-                border-bottom: 1px dashed rgba(255,255,255,0.1);
-            }}
-            .status-tag {{
-                display: inline-block;
-                padding: 0.25rem 0.75rem;
-                border-radius: 9999px;
-                font-size: 0.875rem;
-                font-weight: 600;
-                background-color: rgba(59, 130, 246, 0.1);
-                color: #60a5fa;
-            }}
-            .val-up {{ color: var(--success); }}
-            .val-down {{ color: var(--danger); }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <div class="pulse"></div>
-                <h1>Deriv Algo Bot Dashboard</h1>
-            </div>
-            
-            <div class="grid">
-                <div class="card">
-                    <h2>Strategy Config</h2>
-                    <div style="margin-top: 1rem; display: flex; flex-direction: column; gap: 0.5rem;">
-                        <div style="display: flex; justify-content: space-between;">
-                            <span class="sub-stat">Asset</span>
-                            <strong>{SYMBOL} (15m)</strong>
-                        </div>
-                        <div style="display: flex; justify-content: space-between;">
-                            <span class="sub-stat">Stake</span>
-                            <strong>${STAKE}</strong>
-                        </div>
-                        <div style="display: flex; justify-content: space-between;">
-                            <span class="sub-stat">Breakout Multiplier</span>
-                            <strong>{MULTIPLIER}x - {MAX_MULTIPLIER}x</strong>
-                        </div>
-                        <div style="display: flex; justify-content: space-between;">
-                            <span class="sub-stat">RSI Settings</span>
-                            <strong>{RSI_PERIOD} ({RSI_OB}/{RSI_OS})</strong>
-                        </div>
-                    </div>
-                </div>
+    with open(state_file, "w", encoding="utf-8") as f:
+        json.dump(full_state, f, indent=4)
 
-                <div class="card">
-                    <h2>Current Market State</h2>
-                    <div class="sub-stat" style="margin-bottom: 1rem;">Last updated: {bot_state['last_update']}</div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                        <div>
-                            <div class="sub-stat">RSI (7)</div>
-                            <div style="font-size: 1.5rem; font-weight: bold;" class="{ 'val-up' if bot_state['last_candle_rsi'] > 50 else 'val-down'}">{bot_state['last_candle_rsi']:.2f}</div>
-                        </div>
-                        <div>
-                            <div class="sub-stat">Body vs Avg</div>
-                            <div style="font-size: 1.1rem; font-weight: bold;">{bot_state['last_candle_body']:.5f} / {bot_state['last_candle_avg_body']:.5f}</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <h2>Account Overview</h2>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
-                        <div>
-                            <div class="sub-stat">Current Balance</div>
-                            <div style="font-size: 1.5rem; font-weight: bold;">${bot_state['current_balance']:.2f}</div>
-                            <div class="sub-stat" style="font-size: 0.75rem;">Start: ${bot_state['starting_balance']:.2f}</div>
-                        </div>
-                        <div>
-                            <div class="sub-stat">Total P/L</div>
-                            <div style="font-size: 1.5rem; font-weight: bold;" class="{ 'val-up' if bot_state['total_profit'] >= 0 else 'val-down'}">${bot_state['total_profit']:.2f}</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <h2>Bot Performance</h2>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
-                        <div>
-                            <div class="stat">{bot_state['total_trades']}</div>
-                            <div class="sub-stat">Trades Executed</div>
-                        </div>
-                        <div>
-                            <div style="font-size: 1.8rem; font-weight: 700; margin: 0.5rem 0;">
-                                <span style="color: var(--success);">{bot_state['trades_won']}</span>
-                                <span style="color: var(--text-muted); font-size: 1.2rem;">/</span>
-                                <span style="color: var(--danger);">{bot_state['trades_lost']}</span>
-                            </div>
-                            <div class="sub-stat">Win / Loss</div>
-                        </div>
-                    </div>
-                    
-                    <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.05);">
-                        <div class="sub-stat">Last Signal</div>
-                        <div style="margin-top: 0.5rem;">
-                            <span class="status-tag">{bot_state['last_signal']}</span>
-                            <span class="sub-stat" style="margin-left: 0.5rem;">{bot_state['last_signal_time']}</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card" style="margin-bottom: 2rem;">
-                <h2>Trade History</h2>
-                <div style="max-height: 400px; overflow-y: auto; padding-right: 0.5rem;">
-                    {trades_html if trades_html else "<div class='sub-stat'>No trades yet.</div>"}
-                </div>
-            </div>
-
-            <div class="card" style="padding: 0; overflow: hidden;">
-                <h2 style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">System Logs</h2>
-                <div class="logs-container">
-                    {logs_html}
-                </div>
-            </div>
-        </div>
-        <script>
-            setTimeout(() => window.location.reload(), 30000);
-        </script>
-    </body>
-    </html>
-    """
-    return web.Response(text=html_content, content_type='text/html')
-
-async def start_web_server():
-    app = web.Application()
-    app.add_routes([web.get('/', handle)])
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    log(f"Web server started on port {port}")
 
 async def bot_loop():
     while True:
@@ -618,7 +421,6 @@ async def main():
     else:
         log("Warning: Could not fetch initial balance.")
 
-    await start_web_server()
     log("Live Forex Bot Started! Waiting for the next 15-minute boundary...")
     
     log("Running initial test cycle immediately...")

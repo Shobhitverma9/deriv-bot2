@@ -1,0 +1,30 @@
+{
+    "symbol": "frxEURUSD",
+    "bot_state": {
+        "total_trades": 0,
+        "trades_won": 0,
+        "trades_lost": 0,
+        "starting_balance": 0.0,
+        "current_balance": 0.0,
+        "total_profit": 0.0,
+        "last_signal": "None",
+        "last_signal_time": "Never",
+        "last_candle_rsi": 43.968871595329496,
+        "last_candle_body": 7.00000000000145e-05,
+        "last_candle_avg_body": 0.0003720000000000057,
+        "last_update": "2026-09-02 20:54:21",
+        "last_trade_epoch": 0,
+        "pending_trade_details": {}
+    },
+    "app_logs": [
+        "[2026-09-02 20:54:21] Sleeping for 343 seconds until next hour...",
+        "[2026-09-02 20:54:21] No signal detected for this cycle.",
+        "[2026-09-02 20:54:21] Analyzed 15m candle (Epoch: 2026-09-02 15:00:00) -> Body: 0.00007, Avg: 0.00037, Mult: 0.19x, RSI: 43.97",
+        "[2026-09-02 20:54:19] Running 15-minute strategy cycle...",
+        "[2026-09-02 20:54:19] Running initial test cycle immediately...",
+        "[2026-09-02 20:54:19] Live Forex Bot Started! Waiting for the next 15-minute boundary...",
+        "[2026-09-02 20:54:19] Warning: Could not fetch initial balance.",
+        "[2026-09-02 20:54:19] Error fetching balance: timed out during opening handshake"
+    ],
+    "trade_history": []
+}
