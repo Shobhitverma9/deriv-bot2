@@ -17,6 +17,8 @@ SYMBOL = "frxAUDCAD"
 STAKE = 10.0
 ROLLING_WINDOW = 10
 MULTIPLIER = 3.5
+MAX_MULTIPLIER = 5.0
+MIN_PAYOUT_PCT = 70.0
 RSI_PERIOD = 7
 RSI_OB = 80
 RSI_OS = 20
@@ -37,9 +39,11 @@ bot_state = {
     "last_candle_body": 0.0,
     "last_candle_avg_body": 0.0,
     "last_update": "Never",
-    "last_trade_epoch": 0
+    "last_trade_epoch": 0,
+    "pending_trade_details": {}
 }
 app_logs = deque(maxlen=100)
+trade_history = deque(maxlen=50)
 
 def log(msg):
     now = datetime.now()
@@ -107,7 +111,7 @@ async def fetch_balance():
         log(f"Error fetching balance: {e}")
     return None
 
-async def monitor_contract(contract_id):
+async def monitor_contract(contract_id, trade_info=None):
     ws_url = await get_otp_ws_url()
     if not ws_url:
         return
@@ -136,6 +140,11 @@ async def monitor_contract(contract_id):
                     bal = await fetch_balance()
                     if bal is not None:
                         bot_state["current_balance"] = bal
+                        
+                    if trade_info:
+                        trade_info["profit"] = profit
+                        trade_info["status"] = status
+                        trade_info["balance_after"] = bot_state["current_balance"]
                     break
     except Exception as e:
         log(f"Error monitoring contract {contract_id}: {e}")
@@ -165,9 +174,17 @@ async def execute_trade(contract_type):
             log(f"Error fetching proposal: {res['error']['message']}")
             return
             
-        proposal_id = res.get("proposal", {}).get("id")
-        ask_price = res.get("proposal", {}).get("ask_price")
-        log(f"Obtained Quote -> Price: {ask_price}, Proposal ID: {proposal_id}")
+        proposal = res.get("proposal", {})
+        proposal_id = proposal.get("id")
+        ask_price = proposal.get("ask_price")
+        payout = proposal.get("payout")
+        log(f"Obtained Quote -> Price: {ask_price}, Payout: {payout}, Proposal ID: {proposal_id}")
+        
+        if ask_price and payout:
+            payout_pct = ((payout - ask_price) / ask_price) * 100
+            if payout_pct < MIN_PAYOUT_PCT:
+                log(f"⚠️ Trade Rejected! Payout is only {payout_pct:.1f}% (Below {MIN_PAYOUT_PCT}% threshold).")
+                return
         
         # Step 2: Buy
         buy_req = {
@@ -185,7 +202,19 @@ async def execute_trade(contract_type):
             contract_id = buy_res['buy']['contract_id']
             log(f"Trade Executed Successfully! Contract ID: {contract_id}")
             bot_state["total_trades"] += 1
-            asyncio.create_task(monitor_contract(contract_id))
+            
+            trade_info = {
+                "contract_id": contract_id,
+                "type": contract_type,
+                "time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "details": bot_state.get("pending_trade_details", {}).copy(),
+                "balance_before": bot_state["current_balance"],
+                "profit": 0.0,
+                "balance_after": 0.0,
+                "status": "OPEN"
+            }
+            trade_history.appendleft(trade_info)
+            asyncio.create_task(monitor_contract(contract_id, trade_info))
 
 async def fetch_recent_candles():
     uri = "wss://api.derivws.com/trading/v1/options/ws/public"
@@ -232,7 +261,8 @@ def check_for_signal(candles):
     if pd.isna(last_closed['avg_body_size']) or pd.isna(last_closed['rsi']):
         return None
         
-    is_breakout = last_closed['body_size'] > (last_closed['avg_body_size'] * MULTIPLIER)
+    multiplier_val = last_closed['body_size'] / last_closed['avg_body_size'] if last_closed['avg_body_size'] > 0 else 0
+    is_breakout = (multiplier_val > MULTIPLIER) and (multiplier_val < MAX_MULTIPLIER)
     rsi = last_closed['rsi']
     direction = last_closed['direction']
     
@@ -243,7 +273,7 @@ def check_for_signal(candles):
     bot_state["last_update"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     candle_time = pd.to_datetime(last_closed['epoch'], unit='s')
-    log(f"Analyzed 15m candle (Epoch: {candle_time}) -> Body: {last_closed['body_size']:.5f}, Avg: {last_closed['avg_body_size']:.5f}, RSI: {rsi:.2f}")
+    log(f"Analyzed 15m candle (Epoch: {candle_time}) -> Body: {last_closed['body_size']:.5f}, Avg: {last_closed['avg_body_size']:.5f}, Mult: {multiplier_val:.2f}x, RSI: {rsi:.2f}")
 
     if is_breakout:
         if direction == 1 and rsi > RSI_OB:
@@ -254,6 +284,12 @@ def check_for_signal(candles):
             bot_state["last_signal"] = "PUT"
             bot_state["last_signal_time"] = bot_state["last_update"]
             bot_state["last_trade_epoch"] = last_closed['epoch']
+            bot_state["pending_trade_details"] = {
+                "rsi": rsi,
+                "multiplier": multiplier_val,
+                "body": last_closed['body_size'],
+                "avg_body": last_closed['avg_body_size']
+            }
             return "PUT"
         elif direction == -1 and rsi < RSI_OS:
             if last_closed['epoch'] <= bot_state["last_trade_epoch"]:
@@ -263,6 +299,12 @@ def check_for_signal(candles):
             bot_state["last_signal"] = "CALL"
             bot_state["last_signal_time"] = bot_state["last_update"]
             bot_state["last_trade_epoch"] = last_closed['epoch']
+            bot_state["pending_trade_details"] = {
+                "rsi": rsi,
+                "multiplier": multiplier_val,
+                "body": last_closed['body_size'],
+                "avg_body": last_closed['avg_body_size']
+            }
             return "CALL"
             
     return None
@@ -279,6 +321,30 @@ async def run_bot_cycle():
 
 async def handle(request):
     logs_html = "".join([f"<div class='log-entry'>{html.escape(l)}</div>" for l in app_logs])
+    
+    trades_html = ""
+    for t in trade_history:
+        profit = t.get("profit", 0)
+        color = "var(--success)" if profit > 0 else ("var(--danger)" if profit < 0 else "var(--text-muted)")
+        status = t.get("status", "OPEN")
+        trades_html += f"""
+        <div style="background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem; border-left: 4px solid {color};">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                <strong>{t.get('type')} - {t.get('time')}</strong>
+                <span style="color: {color}; font-weight: bold;">{status} (P/L: ${profit:.2f})</span>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; font-size: 0.85rem; color: var(--text-muted);">
+                <div>
+                    <div>RSI: {t.get('details', {}).get('rsi', 0):.2f}</div>
+                    <div>Multiplier: {t.get('details', {}).get('multiplier', 0):.2f}x</div>
+                </div>
+                <div>
+                    <div>Bal Before: ${t.get('balance_before', 0):.2f}</div>
+                    <div>Bal After: ${t.get('balance_after', 0):.2f}</div>
+                </div>
+            </div>
+        </div>
+        """
     
     html_content = f"""
     <!DOCTYPE html>
@@ -414,7 +480,7 @@ async def handle(request):
                         </div>
                         <div style="display: flex; justify-content: space-between;">
                             <span class="sub-stat">Breakout Multiplier</span>
-                            <strong>{MULTIPLIER}x</strong>
+                            <strong>{MULTIPLIER}x - {MAX_MULTIPLIER}x</strong>
                         </div>
                         <div style="display: flex; justify-content: space-between;">
                             <span class="sub-stat">RSI Settings</span>
@@ -477,6 +543,13 @@ async def handle(request):
                             <span class="sub-stat" style="margin-left: 0.5rem;">{bot_state['last_signal_time']}</span>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-bottom: 2rem;">
+                <h2>Trade History</h2>
+                <div style="max-height: 400px; overflow-y: auto; padding-right: 0.5rem;">
+                    {trades_html if trades_html else "<div class='sub-stat'>No trades yet.</div>"}
                 </div>
             </div>
 
