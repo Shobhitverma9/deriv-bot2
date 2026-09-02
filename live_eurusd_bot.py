@@ -330,14 +330,21 @@ def check_for_signal(candles):
     return None
 
 async def run_bot_cycle():
-    log("Running 15-minute strategy cycle...")
-    candles = await fetch_recent_candles()
-    signal = check_for_signal(candles)
-    
-    if signal:
-        await execute_trade(signal)
-    else:
-        log("No signal detected for this cycle.")
+    try:
+        log("Running 15-minute strategy cycle...")
+        candles = await fetch_recent_candles()
+        if not candles:
+            log("No candles returned. Skipping cycle.")
+            return
+            
+        signal = check_for_signal(candles)
+        
+        if signal:
+            await execute_trade(signal)
+        else:
+            log("No signal detected for this cycle.")
+    except Exception as e:
+        log(f"⚠️ Network Error during cycle: {e}. Bot will retry on the next cycle.")
 
 async def handle(request):
     logs_html = "".join([f"<div class='log-entry'>{html.escape(l)}</div>" for l in app_logs])
